@@ -33,7 +33,6 @@ public class GuardController : MonoBehaviour
     [Header("Combate")]
     [SerializeField] private float meleeRange = 2f;
     [SerializeField] private float shootingRange = 15f;
-    [SerializeField] private float shootingCooldown = 1f;
     [SerializeField] private Transform weaponHolder;
     
     [Header("Salud")]
@@ -51,8 +50,6 @@ public class GuardController : MonoBehaviour
     [SerializeField] private float fleeSpeed = 7f;
     
     [Header("Búsqueda")]
-    [SerializeField] private float searchRotationSpeed = 90f; // Grados por segundo al girar buscando
-    [SerializeField] private float searchRotationDuration = 3f; // Tiempo girando antes de moverse
     [SerializeField] private float randomSearchRange = 10f; // Rango para búsqueda aleatoria
     [SerializeField] private float randomSearchDuration = 10f; // Tiempo máximo buscando aleatoriamente
     [SerializeField] private float lastKnownPositionReachDistance = 2f; // Distancia para considerar que llegó
@@ -73,13 +70,13 @@ public class GuardController : MonoBehaviour
     private Vector3 lastKnownPlayerPosition;
     private bool playerDetected = false;
     private float weaponDropCooldown = 0f; // Cooldown después de soltar arma
-    private const float WEAPON_DROP_COOLDOWN_TIME = 2f; // 2 segundos antes de poder recoger
+    private const float WEAPON_DROP_COOLDOWN_TIME = 1.2f; // 2 segundos antes de poder recoger
     private Vector3 lastPlayerPosition; // Para calcular velocidad del player
     private float playerSpeedLastFrame = 0f; // Velocidad del player en el frame anterior
     private float stunDuration = 0f; // Duración del aturdimiento por disparo
-    private const float STUN_TIME_MIN = 1f; // Mínimo tiempo de aturdimiento
-    private const float STUN_TIME_MAX = 2f; // Máximo tiempo de aturdimiento
-    private const float KNOCKBACK_FORCE = 5f; // Fuerza del retroceso
+    private const float STUN_TIME_MIN = 0.4f; // Mínimo tiempo de aturdimiento
+    private const float STUN_TIME_MAX = 1.2f; // Máximo tiempo de aturdimiento
+    private const float KNOCKBACK_FORCE = 25f; // Fuerza del retroceso
     
     // Variables de búsqueda
     private bool hasReachedLastKnownPosition = false;
@@ -89,8 +86,17 @@ public class GuardController : MonoBehaviour
     private Vector3 randomSearchDestination;
     private bool isRotating = false;
     private float initialRotationY;
-    private float rotationProgress = 0f;
     private Vector3 guardPostPosition; // Posición de guardia o waypoint al que volver
+    
+    // Variables de vigilancia
+    private float vigilanceRotationTimer = 0f;
+    private float vigilanceLookDuration = 1f; // Tiempo mirando en cada dirección (más rápido)
+    private int[] vigilanceLookDirections = new int[4] { 0, 1, 2, 3 }; // Direcciones disponibles
+    private int vigilanceLookDirectionIndex = 0; // Índice en el array aleatorio
+    private const float VIGILANCE_ROTATION_SMOOTH = 8f; // Más rápido
+    private float initialVigilanceRotationY = 0f;
+    private bool isVigilanceRotating = false;
+    private Vector3 vigilanceMovementDirection = Vector3.zero;
     
     
     private void Awake()
@@ -192,9 +198,6 @@ public class GuardController : MonoBehaviour
             case GuardState.Vigilando:
                 UpdateVigilando();
                 break;
-            case GuardState.Patrulla:
-                UpdatePatrulla();
-                break;
             case GuardState.Persiguiendo:
                 UpdatePersiguiendo();
                 break;
@@ -274,9 +277,30 @@ public class GuardController : MonoBehaviour
         if (currentState == GuardState.Derribado || currentState == GuardState.RecuperandoArma || currentState == GuardState.Muerto) 
             return;
         
-        // Si está desarmado, no persegiur (ya debería estar buscando arma)
+        // Si está desarmado, ir a buscar arma en lugar de perseguir
         if (!isArmed)
         {
+            // Buscar si hay armas cercanas
+            Collider[] nearbyWeapons = Physics.OverlapSphere(transform.position, 25f);
+            bool hasWeaponNearby = false;
+            foreach (Collider col in nearbyWeapons)
+            {
+                if (col.CompareTag("Arma") || col.GetComponent<WeaponData>() != null)
+                {
+                    hasWeaponNearby = true;
+                    break;
+                }
+            }
+            
+            if (hasWeaponNearby)
+            {
+                SetState(GuardState.RecuperandoArma);
+            }
+            else
+            {
+                // Sin arma cerca, huir
+                SetState(GuardState.Huyendo);
+            }
             return;
         }
         
@@ -295,17 +319,80 @@ public class GuardController : MonoBehaviour
     
     private void UpdateVigilando()
     {
-        // Solo rotar y vigilar
+        // Si detecta al player, cambiar a perseguir
         if (playerDetected && player != null)
         {
-            Vector3 directionToPlayer = (player.position - transform.position).normalized;
-            directionToPlayer.y = 0f;
-            if (directionToPlayer.magnitude > 0.1f)
-            {
-                Quaternion targetRotation = Quaternion.LookRotation(directionToPlayer);
-                transform.rotation = Quaternion.Slerp(transform.rotation, targetRotation, 5f * Time.deltaTime);
-            }
+            SetState(GuardState.Persiguiendo);
+            return;
         }
+        
+        // Solo escanear sin moverse
+        if (!isVigilanceRotating)
+        {
+            isVigilanceRotating = true;
+            initialVigilanceRotationY = transform.eulerAngles.y;
+            vigilanceRotationTimer = 0f;
+            ShuffleVigilanceDirections();
+            vigilanceLookDirectionIndex = 0;
+        }
+        
+        vigilanceRotationTimer += Time.deltaTime;
+        
+        // Calcular ángulo objetivo según la dirección actual
+        int currentDirection = vigilanceLookDirections[vigilanceLookDirectionIndex];
+        float targetRotationY = initialVigilanceRotationY;
+        switch (currentDirection)
+        {
+            case 0:
+                targetRotationY = initialVigilanceRotationY;
+                break;
+            case 1:
+                targetRotationY = initialVigilanceRotationY + 90f;
+                break;
+            case 2:
+                targetRotationY = initialVigilanceRotationY + 180f;
+                break;
+            case 3:
+                targetRotationY = initialVigilanceRotationY - 90f;
+                break;
+        }
+        
+        // Rotar suavemente
+        Quaternion targetRotation = Quaternion.Euler(0, targetRotationY, 0);
+        transform.rotation = Quaternion.Slerp(transform.rotation, targetRotation, VIGILANCE_ROTATION_SMOOTH * Time.deltaTime);
+        
+        // Cambiar dirección cada 1 segundo
+        if (vigilanceRotationTimer >= vigilanceLookDuration)
+        {
+            vigilanceLookDirectionIndex++;
+            if (vigilanceLookDirectionIndex >= 4)
+            {
+                ShuffleVigilanceDirections();
+                vigilanceLookDirectionIndex = 0;
+            }
+            vigilanceRotationTimer = 0f;
+        }
+    }
+    
+    private void ShuffleVigilanceDirections()
+    {
+        // Fisher-Yates shuffle para barajar las direcciones
+        for (int i = vigilanceLookDirections.Length - 1; i > 0; i--)
+        {
+            int randomIndex = Random.Range(0, i + 1);
+            
+            // Intercambiar
+            int temp = vigilanceLookDirections[i];
+            vigilanceLookDirections[i] = vigilanceLookDirections[randomIndex];
+            vigilanceLookDirections[randomIndex] = temp;
+        }
+    }
+    
+    private void GenerateRandomMovementDirection()
+    {
+        // Generar una dirección de movimiento aleatoria
+        float randomAngle = Random.Range(0f, 360f);
+        vigilanceMovementDirection = new Vector3(Mathf.Cos(randomAngle * Mathf.Deg2Rad), 0, Mathf.Sin(randomAngle * Mathf.Deg2Rad)).normalized;
     }
     
     private void UpdatePatrulla()
@@ -382,7 +469,34 @@ public class GuardController : MonoBehaviour
             return;
         }
         
-        // Si detecta al player de nuevo, seguir persiguiendo
+        // Si está desarmado, ir a buscar arma en lugar de atacar
+        if (!isArmed)
+        {
+            Collider[] nearbyWeapons = Physics.OverlapSphere(transform.position, 25f);
+            bool hasWeaponNearby = false;
+            foreach (Collider col in nearbyWeapons)
+            {
+                if (col.CompareTag("Arma") || col.GetComponent<WeaponData>() != null)
+                {
+                    hasWeaponNearby = true;
+                    break;
+                }
+            }
+            
+            if (hasWeaponNearby)
+            {
+                SetState(GuardState.RecuperandoArma);
+                return;
+            }
+            else
+            {
+                // Sin arma y sin armas cercanas, huir
+                SetState(GuardState.Huyendo);
+                return;
+            }
+        }
+        
+        // Si detecta al player, perseguir
         if (playerDetected)
         {
             float distanceToPlayer = Vector3.Distance(transform.position, player.position);
@@ -406,27 +520,20 @@ public class GuardController : MonoBehaviour
                     transform.rotation = Quaternion.Slerp(transform.rotation, targetRotation, 10f * Time.deltaTime);
                 }
                 
-                // Calcular precisión y decidir si acierta o falla
+                // Disparar
                 float accuracy = CalculateAccuracy();
                 if (Random.value < accuracy)
                 {
-                    // Acierto: disparar normalmente
                     if (armaController != null && isArmed)
-                    {
                         armaController.Shoot();
-                    }
                 }
                 else
                 {
-                    // Fallo: disparar pero sin acertar
                     if (armaController != null && isArmed)
-                    {
-                        // Disparar con desviación importante
                         armaController.ShootWithMiss();
-                    }
                 }
             }
-            // Acercarse para disparar si no está en rango
+            // Acercarse si no está en rango
             else
             {
                 navAgent.isStopped = false;
@@ -435,40 +542,19 @@ public class GuardController : MonoBehaviour
         }
         else
         {
-            // Perdió de vista al player, empezar a buscar
+            // Perdió de vista, ir a buscar
             StartSearching();
         }
     }
     
     private void StartSearching()
     {
-        // Guardar posición de guardia/waypoint para volver después
-        if (currentState == GuardState.Persiguiendo)
-        {
-            if (startsPatrolling && waypoints.Count > 0)
-            {
-                guardPostPosition = waypoints[currentWaypointIndex].position;
-            }
-            else
-            {
-                guardPostPosition = transform.position; // Guardar posición actual como punto de guardia
-            }
-        }
-        
         SetState(GuardState.Buscando);
-        hasReachedLastKnownPosition = false;
-        searchRotationTimer = 0f;
-        randomSearchTimer = 0f;
-        isRotating = false;
-        searchStartPosition = transform.position;
-        
-        // Ir al último lugar conocido
-        navAgent.SetDestination(lastKnownPlayerPosition);
     }
     
     private void UpdateBuscando()
     {
-        // Si detecta al player de nuevo, persiguir
+        // Si detecta al player, perseguir
         if (playerDetected && player != null)
         {
             SetState(GuardState.Persiguiendo);
@@ -486,124 +572,98 @@ public class GuardController : MonoBehaviour
                 navAgent.isStopped = true;
                 isRotating = true;
                 initialRotationY = transform.eulerAngles.y;
-                rotationProgress = 0f;
                 searchRotationTimer = 0f;
+                ShuffleVigilanceDirections();
+                vigilanceLookDirectionIndex = 0;
             }
         }
-        // Si ya llegó, empezar a girar buscando
+        // Si ya llegó, escanear la zona
         else if (isRotating)
         {
             searchRotationTimer += Time.deltaTime;
             
-            // Girar 360 grados durante searchRotationDuration segundos
-            rotationProgress = searchRotationTimer / searchRotationDuration;
-            
-            if (rotationProgress >= 1f)
+            // Escaneo similar al de vigilancia
+            int currentDirection = vigilanceLookDirections[vigilanceLookDirectionIndex];
+            float targetRotationY = initialRotationY;
+            switch (currentDirection)
             {
-                // Terminó de girar, empezar búsqueda aleatoria
-                isRotating = false;
-                randomSearchTimer = 0f;
-                SetRandomSearchDestination();
-            }
-            else
-            {
-                // Rotar suavemente
-                float currentRotationY = initialRotationY + (rotationProgress * 360f);
-                transform.rotation = Quaternion.Euler(0, currentRotationY, 0);
-            }
-        }
-        // Búsqueda aleatoria
-        else
-        {
-            randomSearchTimer += Time.deltaTime;
-            
-            // Verificar si llegó al destino aleatorio o si pasó el tiempo
-            if (randomSearchTimer >= randomSearchDuration)
-            {
-                // Tiempoagotado, volver a punto de guardia
-                ReturnToGuardPost();
-                return;
+                case 0:
+                    targetRotationY = initialRotationY;
+                    break;
+                case 1:
+                    targetRotationY = initialRotationY + 90f;
+                    break;
+                case 2:
+                    targetRotationY = initialRotationY + 180f;
+                    break;
+                case 3:
+                    targetRotationY = initialRotationY - 90f;
+                    break;
             }
             
-            // Verificar si llegó al destino aleatorio
-            if (!navAgent.pathPending && navAgent.remainingDistance < waypointReachDistance)
+            Quaternion targetRotation = Quaternion.Euler(0, targetRotationY, 0);
+            transform.rotation = Quaternion.Slerp(transform.rotation, targetRotation, VIGILANCE_ROTATION_SMOOTH * Time.deltaTime);
+            
+            // Moverse lentamente en dirección aleatoria mientras escanea
+            Vector3 forwardDirection = transform.forward;
+            forwardDirection.y = 0f;
+            forwardDirection = forwardDirection.normalized;
+            
+            Vector3 newPosition = transform.position + forwardDirection * 0.5f * Time.deltaTime;
+            if (Vector3.Distance(newPosition, searchStartPosition) < 5f)
             {
-                // Ir a otro punto aleatorio
-                SetRandomSearchDestination();
+                transform.position = newPosition;
             }
-        }
-    }
-    
-    private void SetRandomSearchDestination()
-    {
-        // Generar un punto aleatorio dentro del rango de búsqueda
-        Vector2 randomCircle = Random.insideUnitCircle * randomSearchRange;
-        Vector3 randomPosition = searchStartPosition + new Vector3(randomCircle.x, 0, randomCircle.y);
-        
-        // Buscar un punto válido en el NavMesh
-        NavMeshHit hit;
-        if (NavMesh.SamplePosition(randomPosition, out hit, randomSearchRange, NavMesh.AllAreas))
-        {
-            randomSearchDestination = hit.position;
-            navAgent.SetDestination(randomSearchDestination);
-            navAgent.isStopped = false;
-        }
-        else
-        {
-            // Si no encuentra un punto válido, intentar de nuevo
-            SetRandomSearchDestination();
+            
+            // Cambiar dirección cada 1 segundo
+            if (searchRotationTimer >= 1f)
+            {
+                vigilanceLookDirectionIndex++;
+                
+                if (vigilanceLookDirectionIndex >= 4)
+                {
+                    ShuffleVigilanceDirections();
+                    vigilanceLookDirectionIndex = 0;
+                    randomSearchTimer += 1f;
+                    
+                    // Después de 10 segundos sin encontrar, volver al puesto de guardia
+                    if (randomSearchTimer >= randomSearchDuration)
+                    {
+                        ReturnToGuardPost();
+                        return;
+                    }
+                }
+                
+                searchRotationTimer = 0f;
+            }
         }
     }
     
     private void ReturnToGuardPost()
     {
-        // Volver al punto de guardia o waypoint correspondiente
-        if (startsPatrolling && waypoints.Count > 0)
-        {
-            SetState(GuardState.Patrulla);
-            SetDestinationToWaypoint(currentWaypointIndex);
-        }
-        else
-        {
-            SetState(GuardState.Vigilando);
-            navAgent.isStopped = false;
-            navAgent.SetDestination(guardPostPosition);
-            Debug.Log($"{gameObject.name} vuelve a su puesto de guardia en {guardPostPosition}");
-        }
+        SetState(GuardState.Vigilando);
+        // Mover el guardia a su puesto de guardia
+        transform.position = guardPostPosition;
+        navAgent.SetDestination(guardPostPosition);
+        Debug.Log($"{gameObject.name} vuelve a su puesto de guardia");
     }
     
     private void UpdateHuyendo()
     {
         if (player == null) return;
         
-        // Si recupera salud o consigue arma, dejar de huir
+        // Si recupera arma y está sano, dejar de huir
         if (isArmed && currentHealth >= lowHealthThreshold)
         {
-            // Volver a perseguir si detecta al player
-            if (playerDetected)
-            {
-                SetState(GuardState.Persiguiendo);
-                return;
-            }
-            // Volver a estado normal
-            else if (startsPatrolling && waypoints.Count > 0)
-            {
-                SetState(GuardState.Patrulla);
-                return;
-            }
-            else
-            {
-                SetState(GuardState.Vigilando);
-                return;
-            }
+            SetState(GuardState.Vigilando);
+            return;
         }
         
-        // Si está desarmado, ir a buscar arma en lugar de huir
+        // Si está desarmado, ir a buscar arma
         if (!isArmed)
         {
             Collider[] nearbyWeapons = Physics.OverlapSphere(transform.position, 20f);
             bool hasWeaponNearby = false;
-            
             foreach (Collider col in nearbyWeapons)
             {
                 if (col.CompareTag("Arma") || col.GetComponent<WeaponData>() != null)
@@ -620,61 +680,37 @@ public class GuardController : MonoBehaviour
             }
         }
         
-        // Calcular dirección opuesta al player
+        // Huir en dirección opuesta al player
         Vector3 fleeDirection = (transform.position - player.position).normalized;
         Vector3 fleePosition = transform.position + fleeDirection * 15f;
         
-        // Buscar un punto válido en el NavMesh
         NavMeshHit hit;
         if (NavMesh.SamplePosition(fleePosition, out hit, 15f, NavMesh.AllAreas))
         {
-            navAgent.isStopped = false;
             navAgent.SetDestination(hit.position);
         }
         
-        // Si está muy lejos del player, volver a estado normal
+        // Si está muy lejos, volver a vigilar
         if (Vector3.Distance(transform.position, player.position) > detectionRange * 2f)
         {
-            if (startsPatrolling && waypoints.Count > 0)
-            {
-                SetState(GuardState.Patrulla);
-            }
-            else
-            {
-                SetState(GuardState.Vigilando);
-            }
+            SetState(GuardState.Vigilando);
         }
     }
     
     private void UpdateRecuperandoArma()
     {
-        // Si el player está detectado y estamos armados, no buscar arma
-        if (playerDetected && isArmed && currentHealth >= lowHealthThreshold)
+        // Si estamos armados y sanos, volver a vigilar
+        if (isArmed && currentHealth >= lowHealthThreshold)
         {
-            SetState(GuardState.Persiguiendo);
+            SetState(GuardState.Vigilando);
             return;
         }
         
-        // Si estamos en cooldown de soltar arma, no buscarla todavía
+        // Si el cooldown no ha pasado, no hacer nada
         if (weaponDropCooldown > 0f)
-        {
-            // Solo movernos lejos del player mientras esperamos
-            if (player != null && playerDetected && currentHealth < lowHealthThreshold)
-            {
-                Vector3 fleeDirection = (transform.position - player.position).normalized;
-                Vector3 fleePosition = transform.position + fleeDirection * 10f;
-                
-                NavMeshHit hit;
-                if (NavMesh.SamplePosition(fleePosition, out hit, 10f, NavMesh.AllAreas))
-                {
-                    navAgent.isStopped = false;
-                    navAgent.SetDestination(hit.position);
-                }
-            }
             return;
-        }
         
-        // Buscar armas cercanas (primero rango corto)
+        // Buscar arma cercana (primero en rango corto)
         Collider[] nearbyObjects = Physics.OverlapSphere(transform.position, 2f);
         GameObject nearbyWeapon = null;
         
@@ -687,7 +723,7 @@ public class GuardController : MonoBehaviour
             }
         }
         
-        // Si no hay arma muy cerca, buscar en un rango mayor
+        // Si no hay arma cerca, buscar en rango mayor
         if (nearbyWeapon == null)
         {
             Collider[] widerSearch = Physics.OverlapSphere(transform.position, 20f);
@@ -707,39 +743,22 @@ public class GuardController : MonoBehaviour
             }
         }
         
-        // Si no hay arma que recuperar, cambiar de estado
+        // Si no hay arma, ir a vigilar
         if (nearbyWeapon == null)
         {
-            // Si está malherido, huir
-            if (currentHealth < lowHealthThreshold)
-            {
-                SetState(GuardState.Huyendo);
-            }
-            // Si no está malherido, volver a estado normal
-            else if (startsPatrolling && waypoints.Count > 0)
-            {
-                SetState(GuardState.Patrulla);
-            }
-            else
-            {
-                SetState(GuardState.Vigilando);
-            }
+            SetState(GuardState.Vigilando);
             return;
         }
         
-        // Ir hacia el arma
+        // Si está muy cerca del arma, recogerla
         float distanceToWeapon = Vector3.Distance(transform.position, nearbyWeapon.transform.position);
-        
-        // Coger el arma cuando está más cerca (hasta 1 metro)
         if (distanceToWeapon < 1f)
         {
-            // Recuperar el arma
             PickupWeapon();
             return;
         }
         
-        // Moverse hacia el arma con velocidad de patrulla
-        navAgent.isStopped = false;
+        // Moverse hacia el arma
         navAgent.SetDestination(nearbyWeapon.transform.position);
     }
     
@@ -749,22 +768,7 @@ public class GuardController : MonoBehaviour
         navAgent.isStopped = true;
         // Aquí se puede añadir lógica de interrogación más adelante
     }
-    
-    private void UpdateMuerto()
-    {
-        // El guardia está muerto, no puede moverse ni hacer nada
-        navAgent.isStopped = true;
-        
-        // Desactivar componentes adicionales si es necesario
-        // Por ejemplo, desactivar el collider para que no sea golpeable de nuevo
-        Collider col = GetComponent<Collider>();
-        if (col != null)
-        {
-            col.enabled = false;
-        }
-        
-        // Aquí se puede añadir lógica adicional para el estado de muerto
-    }
+
     
     private void SetState(GuardState newState)
     {
@@ -772,16 +776,11 @@ public class GuardController : MonoBehaviour
         
         currentState = newState;
         
-        // Configurar NavMeshAgent según el estado
         switch (newState)
         {
             case GuardState.Vigilando:
-                navAgent.speed = patrolSpeed;
-                navAgent.isStopped = false;
-                break;
-            case GuardState.Patrulla:
-                navAgent.isStopped = false;
-                navAgent.speed = patrolSpeed;
+                navAgent.isStopped = true;
+                isVigilanceRotating = false;
                 break;
             case GuardState.Persiguiendo:
                 navAgent.isStopped = false;
@@ -790,6 +789,12 @@ public class GuardController : MonoBehaviour
             case GuardState.Buscando:
                 navAgent.isStopped = false;
                 navAgent.speed = patrolSpeed;
+                hasReachedLastKnownPosition = false;
+                searchRotationTimer = 0f;
+                randomSearchTimer = 0f;
+                isRotating = false;
+                searchStartPosition = transform.position;
+                navAgent.SetDestination(lastKnownPlayerPosition);
                 break;
             case GuardState.Huyendo:
                 navAgent.isStopped = false;
@@ -803,8 +808,6 @@ public class GuardController : MonoBehaviour
                 navAgent.isStopped = true;
                 break;
             case GuardState.Muerto:
-                navAgent.isStopped = true;
-                navAgent.enabled = false;
                 break;
         }
     }
@@ -838,47 +841,69 @@ public class GuardController : MonoBehaviour
     {
         currentHealth -= damage;
         
-        // Si es ataque a melee, puede derribar al guardia
+        // Si es ataque a melee
         if (isMeleeAttack && currentHealth > 0)
         {
             SetState(GuardState.Derribado);
             return;
         }
         
-        // Si es ataque a distancia (disparo), aplicar knockback y aturdimiento
+        // Si es disparo
         if (!isMeleeAttack && currentHealth > 0 && player != null)
         {
-            // Aplicar knockback
+            // Actualizar posición conocida
+            lastKnownPlayerPosition = player.position;
+            
+            // Si está en vigilancia o patrulla, reaccionar al disparo
+            if (currentState == GuardState.Vigilando)
+            {
+                if (!isArmed)
+                {
+                    // Desarmado: buscar arma
+                    Collider[] nearbyWeapons = Physics.OverlapSphere(transform.position, 25f);
+                    bool hasWeaponNearby = false;
+                    foreach (Collider col in nearbyWeapons)
+                    {
+                        if (col.CompareTag("Arma") || col.GetComponent<WeaponData>() != null)
+                        {
+                            hasWeaponNearby = true;
+                            break;
+                        }
+                    }
+                    
+                    if (hasWeaponNearby)
+                        SetState(GuardState.RecuperandoArma);
+                    else
+                        SetState(GuardState.Huyendo);
+                }
+                else
+                {
+                    // Armado: persecutar
+                    SetState(GuardState.Persiguiendo);
+                    AlertNearbyGuards();
+                }
+            }
+            
+            // Knockback y aturdimiento
             Rigidbody rb = GetComponent<Rigidbody>();
             if (rb == null)
             {
                 rb = gameObject.AddComponent<Rigidbody>();
-                rb.isKinematic = true; // Inicialmente cinemático para no interferi con NavMesh
+                rb.isKinematic = true;
             }
             
-            // Calcular dirección del knockback (desde el jugador hacia el guardia)
             Vector3 knockbackDirection = (transform.position - player.position).normalized;
-            knockbackDirection.y = 0f; // No empujar hacia arriba/abajo
+            knockbackDirection.y = 0f;
             
-            // Aplicar impulso
             if (!rb.isKinematic)
-            {
                 rb.AddForce(knockbackDirection * KNOCKBACK_FORCE, ForceMode.Impulse);
-            }
             else
-            {
-                // Si es cinemático, mover manualmente
                 transform.Translate(knockbackDirection * KNOCKBACK_FORCE * Time.deltaTime, Space.World);
-            }
             
-            // Aplicar aturdimiento (1-2 segundos sin poder actuar)
             stunDuration = Random.Range(STUN_TIME_MIN, STUN_TIME_MAX);
             
-            // Detener el NavMeshAgent mientras está aturdido
             if (navAgent != null)
-            {
                 navAgent.isStopped = true;
-            }
             
             Debug.Log($"{gameObject.name} recibe disparo y está aturdido por {stunDuration:F2} segundos");
         }
@@ -892,57 +917,18 @@ public class GuardController : MonoBehaviour
         
         // Posibilidad de soltar el arma
         if (isArmed && Random.value < dropWeaponChance)
-        {
             DropWeapon();
-        }
-        
-        // Lógica de respuesta a daño
-        if (!isArmed)
-        {
-            // Si está desarmado, SIEMPRE buscar arma primero
-            if (currentState != GuardState.Derribado && currentState != GuardState.RecuperandoArma && currentState != GuardState.Muerto)
-            {
-                // Verificar si hay armas cerca
-                Collider[] nearbyWeapons = Physics.OverlapSphere(transform.position, 25f);
-                bool hasWeaponNearby = false;
-                
-                foreach (Collider col in nearbyWeapons)
-                {
-                    if (col.CompareTag("Arma") || col.GetComponent<WeaponData>() != null)
-                    {
-                        hasWeaponNearby = true;
-                        break;
-                    }
-                }
-                
-                // Ir a buscar arma si la hay
-                if (hasWeaponNearby)
-                {
-                    SetState(GuardState.RecuperandoArma);
-                }
-                else if (playerDetected)
-                {
-                    // Si no hay arma y detecta al player, huir
-                    SetState(GuardState.Huyendo);
-                }
-            }
-        }
-        else if (currentHealth < lowHealthThreshold)
-        {
-            // Si está malherido y armado, huir
-            if (currentState != GuardState.Derribado && currentState != GuardState.Huyendo)
-            {
-                SetState(GuardState.Huyendo);
-            }
-        }
     }
     
     private void DropWeapon()
     {
 
+        if (!armaController.HasWeapon()) return;
+
         armaController.armaActual.transform.SetParent(null);
 
         Rigidbody weaponRb = armaController.armaActual.GetComponent<Rigidbody>();
+
         if (weaponRb == null)
         {
             weaponRb = armaController.armaActual.AddComponent<Rigidbody>();
@@ -959,18 +945,35 @@ public class GuardController : MonoBehaviour
         weaponDropCooldown = WEAPON_DROP_COOLDOWN_TIME;
 
         Debug.Log($"{gameObject.name} suelta su arma");
+        
+        // Después de soltar el arma, intentar recuperarla
+        // Buscar si hay armas cercanas
+        Collider[] nearbyWeapons = Physics.OverlapSphere(transform.position, 25f);
+        bool hasWeaponNearby = false;
+        foreach (Collider col in nearbyWeapons)
+        {
+            if (col.CompareTag("Arma") || col.GetComponent<WeaponData>() != null)
+            {
+                hasWeaponNearby = true;
+                break;
+            }
+        }
+        
+        // Si hay un arma cerca, ir a recuperarla
+        if (hasWeaponNearby && currentState == GuardState.Persiguiendo)
+        {
+            SetState(GuardState.RecuperandoArma);
+        }
     }
     
     private void PickupWeapon()
     {
-        // Buscar armas cercanas en el suelo (rango aumentado para asegurar que encuentra)
         Collider[] nearbyObjects = Physics.OverlapSphere(transform.position, 5f);
         GameObject weaponToPickup = null;
         float closestDistance = float.MaxValue;
         
         foreach (Collider col in nearbyObjects)
         {
-            // Buscar por tag o componente WeaponData
             if (col.CompareTag("Arma") || col.GetComponent<WeaponData>() != null)
             {
                 float distance = Vector3.Distance(transform.position, col.transform.position);
@@ -988,25 +991,21 @@ public class GuardController : MonoBehaviour
             return;
         }
 
-        if(weaponToPickup.transform.parent.transform.parent.CompareTag("Player"))
+        // Si es arma del player, desarmar al player
+        if (weaponToPickup.GetComponent<WeaponData>().ownerTag == "Player")
             player.GetComponentInChildren<ArmaController>().DropCurrentWeapon();
+
         armaController.EquipWeapon(weaponToPickup);
-       
+        Destroy(weaponToPickup.GetComponent<Rigidbody>());
+        weaponToPickup.GetComponent<WeaponData>().ownerTag = "Guard";
+
         hasWeapon = true;
-        Debug.Log($"{gameObject.name} recupera su arma: {weaponToPickup.name}");
+        Debug.Log($"{gameObject.name} recoge arma: {weaponToPickup.name}");
         
-        // Resetear cooldown después de recoger el arma
         weaponDropCooldown = 0f;
         
-        // Volver a estado normal
-        if (startsPatrolling && waypoints.Count > 0)
-        {
-            SetState(GuardState.Patrulla);
-        }
-        else
-        {
-            SetState(GuardState.Vigilando);
-        }
+        // Volver a vigilar
+        SetState(GuardState.Vigilando);
     }
 
     private void AlertNearbyGuards()
@@ -1026,7 +1025,7 @@ public class GuardController : MonoBehaviour
     
     public void OnAlerted(Vector3 alertPosition)
     {
-        // Si el guardia está en estado normal y está armado y sano, ir a investigar
+        // Si el guardia está en estado normal y está armed y sano, ir a investigar
         if ((currentState == GuardState.Vigilando || currentState == GuardState.Patrulla || currentState == GuardState.Buscando) 
             && isArmed && currentHealth >= lowHealthThreshold)
         {
@@ -1039,37 +1038,46 @@ public class GuardController : MonoBehaviour
     private void Die()
     {
         Debug.Log($"{gameObject.name} muere");
-        
-        // Cambiar al estado Muerto
-        SetState(GuardState.Muerto);
 
-        DropWeapon();
+        // Desactivar el NavMeshAgent PRIMERO antes de añadir Rigidbody
+        if (navAgent != null && navAgent.enabled)
+        {
+            navAgent.enabled = false;
+        }
 
-        // Agregar Rigidbody si no lo tiene
+        // Agregar o obtener Rigidbody
         Rigidbody rb = GetComponent<Rigidbody>();
         if (rb == null)
         {
             rb = gameObject.AddComponent<Rigidbody>();
-            rb.mass = 80f;
-            rb.linearDamping = 0.1f;
-            rb.angularDamping = 0.05f;
-            rb.useGravity = true;
-            rb.isKinematic = false;
-            rb.constraints = RigidbodyConstraints.None;
         }
         
+        // Configurar Rigidbody para físicas realistas
+        rb.mass = 80f;
+        rb.linearDamping = 0.1f;
+        rb.angularDamping = 0.05f;
+        rb.useGravity = true;
+        rb.isKinematic = false;
+        rb.constraints = RigidbodyConstraints.None;
+        
         // Aplicar una pequeña fuerza para que caiga de forma natural
-        Vector3 fallForce = transform.forward * 35f + (Random.insideUnitSphere * 2f);
+        Vector3 fallForce = transform.forward * 10f + (Random.insideUnitSphere * 2f);
         rb.AddForce(fallForce, ForceMode.Impulse);
 
-        Destroy(gameObject,3); // Destruir este gameObject después de 3 segundos
+        // Soltar el arma si tiene
+        DropWeapon();
 
-        // Desactivar componentes de movimiento
-        navAgent.enabled = false;
+        // Cambiar al estado Muerto (DESPUÉS de desactivar NavMeshAgent)
+        currentState = GuardState.Muerto;
+
+        // Desactivar componentes
         if (armaController != null)
         {
             armaController.enabled = false;
         }
+
+        // Destruir este gameObject después de 3 segundos
+        Destroy(gameObject, 3);
     }
     
     // Métodos públicos para obtener información del estado

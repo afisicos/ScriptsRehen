@@ -7,8 +7,8 @@ public class WeaponData : MonoBehaviour
     public float accuracy = 0.95f; // Precisión (0-1, donde 1 es perfecto)
     public bool isAutomatic = false; // Si es automática o semiautomática
     public float range = 50f; // Alcance máximo del arma
-    public float spreadAngle = 2f; // Ángulo de dispersión en grados
     public AudioClip shootSound; // Sonido de disparo
     public string weaponName = "Arma";
+    public string ownerTag;
 }
 

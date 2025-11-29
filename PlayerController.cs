@@ -19,7 +19,11 @@ public class PlayerController : MonoBehaviour
     [Header("Referencias")]
     [SerializeField] private Camera playerCamera;
     
+    [Header("Recoger Armas")]
+    [SerializeField] private float pickupRange = 3f; // Rango para recoger armas
+    
     private CharacterController characterController;
+    private ArmaController armaController;
     private Vector3 currentVelocity;
     private Vector3 moveDirection;
     private bool isSprinting;
@@ -47,6 +51,13 @@ public class PlayerController : MonoBehaviour
         {
             playerCamera = Camera.main;
         }
+        
+        // Obtener ArmaController
+        armaController = GetComponent<ArmaController>();
+        if (armaController == null)
+        {
+            armaController = gameObject.AddComponent<ArmaController>();
+        }
     }
     
     private void Start()
@@ -60,6 +71,7 @@ public class PlayerController : MonoBehaviour
         HandleDash();
         HandleMovement();
         HandleRotation();
+        HandleWeaponPickup();
     }
     
     private void HandleMovement()
@@ -212,6 +224,119 @@ public class PlayerController : MonoBehaviour
     public bool IsDashing()
     {
         return isDashing;
+    }
+    
+    private void HandleWeaponPickup()
+    {
+        // Detectar input de recoger arma (tecla E)
+        if (Input.GetKeyDown(KeyCode.E))
+        {
+            TryPickupWeapon();
+        }
+    }
+    
+    private void TryPickupWeapon()
+    {
+        if (armaController == null) return;
+        
+        // Buscar armas cercanas
+        Collider[] nearbyObjects = Physics.OverlapSphere(transform.position, pickupRange);
+        GameObject closestWeapon = null;
+        float closestDistance = float.MaxValue;
+        
+        foreach (Collider col in nearbyObjects)
+        {
+            // Verificar si es un arma (por tag o componente WeaponData)
+            bool isWeapon = col.CompareTag("Arma");
+            WeaponData weaponData = col.GetComponent<WeaponData>();
+            
+            if (isWeapon || weaponData != null)
+            {
+                float distance = Vector3.Distance(transform.position, col.transform.position);
+                if (distance < closestDistance)
+                {
+                    closestDistance = distance;
+                    closestWeapon = col.gameObject;
+                }
+            }
+        }
+        
+        // Si encontró un arma, equiparla
+        if (closestWeapon != null)
+        {
+            EquipWeapon(closestWeapon);
+        }
+    }
+    
+    private void EquipWeapon(GameObject weaponToEquip)
+    {
+        if (armaController == null || weaponToEquip == null) return;
+        
+        // Guardar referencia al arma actual si existe
+        GameObject currentWeapon = armaController.armaActual;
+        WeaponData currentWeaponData = null;
+        
+        if (currentWeapon != null)
+        {
+            currentWeaponData = currentWeapon.GetComponent<WeaponData>();
+        }
+        
+        // Si tenía un arma, dejarla en el suelo ANTES de equipar la nueva
+        if (currentWeapon != null)
+        {
+            // Crear una copia del arma actual para dejarla en el suelo
+            GameObject weaponToDrop = Instantiate(currentWeapon);
+            DropWeapon(weaponToDrop, currentWeaponData);
+        }
+        
+        // Equipar la nueva arma
+        armaController.EquipWeapon(weaponToEquip);
+        
+        // Destruir el arma del suelo (ya la tenemos equipada)
+        Destroy(weaponToEquip);
+        
+        Debug.Log($"Player equipó: {weaponToEquip.name}");
+    }
+    
+    private void DropWeapon(GameObject weaponToDrop, WeaponData weaponData = null)
+    {
+        if (weaponToDrop == null) return;
+        
+        // Desparentar el arma del holder si está parenteada
+        weaponToDrop.transform.SetParent(null);
+        
+        // Posicionar el arma delante del player
+        Vector3 dropPosition = transform.position + transform.forward * 1.5f;
+        dropPosition.y = transform.position.y; // Mantener en el mismo nivel Y
+        weaponToDrop.transform.position = dropPosition;
+        
+        // Añadir física al arma si no tiene
+        Rigidbody weaponRb = weaponToDrop.GetComponent<Rigidbody>();
+        if (weaponRb == null)
+        {
+            weaponRb = weaponToDrop.AddComponent<Rigidbody>();
+        }
+        weaponRb.isKinematic = false;
+        
+        // Añadir tag para que sea recogible
+        if (!weaponToDrop.CompareTag("Arma"))
+        {
+            weaponToDrop.tag = "Arma";
+        }
+        
+        // Asegurar que tenga collider
+        Collider weaponCollider = weaponToDrop.GetComponent<Collider>();
+        if (weaponCollider == null)
+        {
+            // Añadir un BoxCollider por defecto
+            BoxCollider boxCollider = weaponToDrop.AddComponent<BoxCollider>();
+            boxCollider.isTrigger = false;
+        }
+        
+        // Lanzar el arma un poco hacia adelante
+        weaponRb.AddForce((transform.forward + Vector3.up * 0.5f) * 3f, ForceMode.Impulse);
+        
+        Debug.Log($"Player soltó: {weaponToDrop.name}");
     }
 }
 

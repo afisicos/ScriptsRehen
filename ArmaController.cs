@@ -131,7 +131,7 @@ public class ArmaController : MonoBehaviour
     private Vector3 ApplyAccuracy(Vector3 direction)
     {
         // Calcular dispersión basada en la precisión
-        float spreadAmount = (1f - weaponData.accuracy) * weaponData.spreadAngle;
+        float spreadAmount = (1f - weaponData.accuracy);
         
         // Aplicar dispersión aleatoria
         float randomAngle = Random.Range(-spreadAmount, spreadAmount);
