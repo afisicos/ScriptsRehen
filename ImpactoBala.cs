@@ -15,11 +15,24 @@ public class ImpactoBala : MonoBehaviour
 
     public void Impact(LayerMask layer)
     {
-        if (layer == layerSangre)
+        // Obtener el número de layer del LayerMask recibido
+        int layerNumber = 0;
+        for (int i = 0; i < 32; i++)
+        {
+            if ((layer & (1 << i)) != 0)
+            {
+                layerNumber = i;
+                break;
+            }
+        }
+        
+        // Verificar si la layer está en layerSangre
+        if ((layerSangre & (1 << layerNumber)) != 0)
         {
             meshRenderer.material.color = Color.red;
         }
-        else if (layer == layerPiedra)
+        // Verificar si la layer está en layerPiedra
+        else if ((layerPiedra & (1 << layerNumber)) != 0)
         {
             meshRenderer.material.color = Color.gray;
         }

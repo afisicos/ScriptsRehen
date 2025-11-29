@@ -4,25 +4,17 @@ public class CameraFollow : MonoBehaviour
 {
     [Header("Referencias")]
     [SerializeField] private Transform target; // El transform del jugador
+    [SerializeField] private Camera playerCamera; // La cámara del player
     
     [Header("Seguimiento")]
     [SerializeField] private float followSpeed = 5f;
     [SerializeField] private Vector3 offset = new Vector3(0, 10, 0); // Offset desde arriba
     
-    [Header("Zoom")]
-    [SerializeField] private float minZoom = 5f;
-    [SerializeField] private float maxZoom = 20f;
-    [SerializeField] private float zoomSpeed = 10f;
-    [SerializeField] private float scrollSensitivity = 2f;
-    [SerializeField] private bool useSmoothZoom = true;
-    
     [Header("Suavizado")]
     [SerializeField] private bool useSmoothDamping = true;
     [SerializeField] private float smoothDampingTime = 0.3f;
     
-    private float currentZoom;
-    private float targetZoom;
-    private Vector3 velocity; // Para SmoothDamp del seguimiento horizontal
+    private Vector3 velocity; // Para SmoothDamp del seguimiento
     
     private void Start()
     {
@@ -33,6 +25,11 @@ public class CameraFollow : MonoBehaviour
             if (player != null)
             {
                 target = player.transform;
+                playerCamera = player.GetComponent<Camera>();
+                if (playerCamera == null)
+                {
+                    playerCamera = player.GetComponentInChildren<Camera>();
+                }
             }
             else
             {
@@ -40,9 +37,11 @@ public class CameraFollow : MonoBehaviour
             }
         }
         
-        // Inicializar zoom con el offset Y actual
-        currentZoom = offset.y;
-        targetZoom = currentZoom;
+        // Si no hay cámara asignada, buscarla
+        if (playerCamera == null)
+        {
+            playerCamera = Camera.main;
+        }
         
         // Asegurar que la cámara mire hacia abajo
         transform.rotation = Quaternion.Euler(90f, 0f, 0f);
@@ -55,102 +54,80 @@ public class CameraFollow : MonoBehaviour
             return;
         }
         
-        HandleZoom();
         FollowTarget();
-    }
-    
-    private void HandleZoom()
-    {
-        // Obtener input de la rueda del ratón
-        float scrollInput = Input.GetAxis("Mouse ScrollWheel");
-        
-        if (Mathf.Abs(scrollInput) > 0.01f)
-        {
-            // Actualizar el zoom objetivo según el scroll
-            targetZoom -= scrollInput * scrollSensitivity;
-            targetZoom = Mathf.Clamp(targetZoom, minZoom, maxZoom);
-        }
-        
-        // Aplicar zoom de forma suave hacia el objetivo
-        if (useSmoothZoom)
-        {
-            // Usar MoveTowards para un zoom más controlado y que funcione bien con valores altos
-            float zoomDelta = zoomSpeed * Time.deltaTime;
-            currentZoom = Mathf.MoveTowards(currentZoom, targetZoom, zoomDelta);
-        }
-        else
-        {
-            // Zoom instantáneo
-            currentZoom = targetZoom;
-        }
     }
     
     private void FollowTarget()
     {
-        // Calcular la posición objetivo horizontal (solo X y Z del target)
-        Vector3 horizontalTarget = new Vector3(
-            target.position.x + offset.x,
-            transform.position.y, // Mantener Y actual (será actualizado por el zoom)
-            target.position.z + offset.z
+        // Obtener la posición del cursor en el mundo
+        Vector3 mouseWorldPosition = GetMouseWorldPosition();
+        
+        // Calcular el punto medio entre el player y el cursor
+        Vector3 midPoint = (target.position + mouseWorldPosition) / 2f;
+        
+        // Calcular la posición objetivo (punto medio + offset)
+        Vector3 targetPosition = new Vector3(
+            midPoint.x + offset.x,
+            target.position.y + offset.y, // Mantener la altura relativa al player
+            midPoint.z + offset.z
         );
         
-        // Mover la cámara horizontalmente con suavizado (solo X y Z)
-        Vector3 currentPos = transform.position;
+        // Mover la cámara con suavizado
         Vector3 smoothPosition;
         
         if (useSmoothDamping)
         {
-            // Usar SmoothDamp solo para X y Z (seguimiento horizontal)
-            Vector3 horizontalVelocity = new Vector3(velocity.x, 0, velocity.z);
-            
             smoothPosition = Vector3.SmoothDamp(
-                currentPos,
-                horizontalTarget,
-                ref horizontalVelocity,
+                transform.position,
+                targetPosition,
+                ref velocity,
                 smoothDampingTime
             );
-            
-            // Actualizar velocity solo para X y Z
-            velocity.x = horizontalVelocity.x;
-            velocity.z = horizontalVelocity.z;
         }
         else
         {
-            // Usar Lerp solo para X y Z
+            // Usar Lerp sin suavizado
             smoothPosition = Vector3.Lerp(
-                currentPos,
-                horizontalTarget,
+                transform.position,
+                targetPosition,
                 followSpeed * Time.deltaTime
             );
         }
         
-        // Aplicar el zoom directamente a la posición Y (completamente independiente del seguimiento suave)
-        // El zoom ya se calculó en HandleZoom() y está en currentZoom
-        smoothPosition.y = target.position.y + currentZoom;
-        
         transform.position = smoothPosition;
         
         // Asegurar que la cámara siempre mire hacia abajo (vista top-down)
-        // Mantener la rotación fija en 90 grados en X para vista desde arriba
         transform.rotation = Quaternion.Euler(90f, 0f, 0f);
+    }
+    
+    private Vector3 GetMouseWorldPosition()
+    {
+        if (playerCamera == null)
+        {
+            // Si no hay cámara, devolver la posición del player
+            return target.position;
+        }
+        
+        // Obtener la posición del mouse en pantalla
+        Vector3 mouseScreenPos = Input.mousePosition;
+        
+        // Convertir a posición mundial en el plano horizontal (Y del player)
+        Ray ray = playerCamera.ScreenPointToRay(mouseScreenPos);
+        Plane groundPlane = new Plane(Vector3.up, target.position);
+        
+        if (groundPlane.Raycast(ray, out float distance))
+        {
+            return ray.GetPoint(distance);
+        }
+        
+        // Fallback si el raycast no funciona
+        return target.position;
     }
     
     // Método público para cambiar el target en tiempo de ejecución
     public void SetTarget(Transform newTarget)
     {
         target = newTarget;
-    }
-    
-    // Método público para ajustar el zoom programáticamente
-    public void SetZoom(float zoom)
-    {
-        targetZoom = Mathf.Clamp(zoom, minZoom, maxZoom);
-    }
-    
-    // Método público para obtener el zoom actual
-    public float GetZoom()
-    {
-        return currentZoom;
     }
 }
 
